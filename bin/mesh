@@ -1,0 +1,182 @@
+#!/usr/bin/env python
+import json
+import logging
+import logging.handlers
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+import traceback
+
+import mesos
+import mesos_pb2
+
+proc = None # Global process object
+# This script is meant to execute one and only one subprocess at a time. This
+# simplifies the interaction with Python threads and the driver thread. We
+# don't do any cleanup of the driver or other threads, instead we just shut
+# everthing down with os._exit(). So you probably shouldn't use this program
+# as a module in your project...
+
+log    = logging.getLogger(os.path.basename(sys.argv[0]))
+log.setLevel(logging.DEBUG)
+# TODO: Use '/var/run/syslog' on OS X (check for one, then the other)
+syslog = logging.handlers.SysLogHandler(address = '/dev/log')
+syslog_format = logging.Formatter("%(name)s[%(process)d]: %(message)s")
+syslog.setFormatter(syslog_format)
+log.addHandler(syslog)
+
+# Handles signals, passed as negative numbers, and ensures worker process is
+# cleaned up if it exists.
+#
+# This function is called many times throughout the code, but because it's
+# final statement is a call to os._exit(), it will only ever actually be
+# called one time.
+def exit(returncode):
+    try:
+        cleanup_proc()
+    except Exception, e:
+        log_exc()
+    finally:
+        os._exit( ((-returncode) + 128) if returncode < 0 else returncode )
+
+def log_exc():
+    for line in traceback.format_exc().splitlines():
+        log.error(line)
+
+def json_pp(thing):
+    s = json.dumps(thing, indent=2, separators=(',', ': '), sort_keys=True)
+    data_lines = s.splitlines()[1:-1]
+    return "{ " + '\n'.join([data_lines[0][2:]] + data_lines[1:]) + " }"
+
+def terminate_process_and_group(pid, sleep=2):
+    if proc.poll() is None:
+        os.kill(pid, signal.SIGTERM)
+    time.sleep(2)
+    try: # I hope the PID was not recycled yet...
+        os.killpg(pid, signal.SIGKILL)
+    except OSError, e:
+        pass # There were no processes in the group; hurray.
+
+cleaned_up_already = False
+def cleanup_proc(sleep=2):
+    global proc
+    if proc is not None and not cleaned_up_already:
+        log.info('Terminating process PID %d and subprocesses' % proc.pid)
+        terminate_process_and_group(proc.pid, sleep)
+    else:
+        log.info('Nothing to shutdown')
+
+class ShExecutor(mesos.Executor):
+    def __init__(self, args):
+        self.args   = args
+        self.task   = None
+        self.driver = None
+        self.runner_thread = None
+        self.shutdown_thread = None
+        self.sleep = 2
+
+    def run(self):
+        global proc
+        exitcode = 2
+        finalstate = mesos_pb2.TASK_FAILED
+        try:
+            log.info('ARGV ' + ' '.join(str(arg) for arg in self.args))
+            proc = subprocess.Popen(self.args, preexec_fn=os.setsid)
+            self.send_state(mesos_pb2.TASK_RUNNING)
+            log.info('Waiting for process...')
+            proc.wait()
+            log.info('Process exited with code: %d' % proc.returncode)
+            try:
+                # If the process failed to kills its subprocesses, try to shut
+                # them down gracefully.
+                os.killpg(-proc.pid, signal.SIGTERM)
+            except OSError, e:
+                pass # There were no processes in the group; hurray.
+            if proc.returncode == 0:
+                finalstate = mesos_pb2.TASK_FINISHED
+            else:
+                if self.shutdown_thread:
+                    finalstate = mesos_pb2.TASK_KILLED
+                else:
+                    finalstate = mesos_pb2.TASK_FAILED
+        except Exception, e:
+            log_exc()
+        finally:
+            self.send_state(finalstate)
+            exit(exitcode)
+
+    def spawn_shutdown_thread(self):
+        # Only kill the main process. We allow it to cleanup its subprocesses
+        # and then make an effort to cleanup elsewhere.
+        self.shutdown_thread = threading.Thread(target=cleanup_proc)
+        self.shutdown_thread.daemon = True
+        self.shutdown_thread.start()
+
+    def send_state(self, state):
+        try:
+            update               = mesos_pb2.TaskStatus()
+            update.task_id.value = self.task.task_id.value
+            update.state         = state
+            self.driver.sendStatusUpdate(update)
+        except Exception, e:
+            log_exc()
+
+    #### Mesos Executor API methods ####
+
+    def registered(self, driver, executorInfo, frameworkInfo, slaveInfo):
+        log.info('Registered with Mesos slave')
+
+    def reregistered(driver, slaveInfo):
+        log.info('Reregistered with Mesos slave')
+
+    def disconnected(driver):
+        log.warning('Disconnected from Mesos slave')
+
+    def launchTask(self, driver, task):
+        self.task   = task
+        self.driver = driver
+        log.info('Task is: %s' % task.task_id.value)
+        data = {}
+        try:
+            data = json.loads(task.data) if task.data else {}
+            for line in json_pp(data).splitlines(): 
+                log.info(line)
+        except Exception, e:
+            log.error('JSON from framework is rubbish')
+            log_exc()
+        try:
+            self.run_thread = threading.Thread(target=self.run)
+            self.run_thread.daemon = True
+            self.run_thread.start()
+        except Exception, e:
+            log_exc()
+            self.send_state(mesos_pb2.TASK_FAILED)
+            driver.stop()
+            exit(2)
+
+    def killTask(self, driver, task_id):
+        if self.task.task_id.value == task_id.value:
+            log.info('Asked to shutdown managed task %s' % task_id.value)
+            self.spawn_shutdown_thread()
+        else:
+            log.info('Asked to shutdown unknown task %s' % task_id.value)
+
+    def shutdown(self, driver):
+        self.spawn_shutdown_thread()
+
+if __name__ == '__main__':
+    def handler(signum, _):
+        log.info('Exiting due to signal: '+str(signum))
+        exit(-signum)
+    signal.signal(signal.SIGINT,  handler)
+    signal.signal(signal.SIGTERM, handler)
+    signal.signal(signal.SIGABRT, handler)
+    signal.signal(signal.SIGPIPE, handler)
+    signal.signal(signal.SIGSEGV, handler)
+    driver = mesos.MesosExecutorDriver(ShExecutor(sys.argv[1:]))
+    log.info('Ready to serve!')
+    exit(0 if driver.run() == mesos_pb2.DRIVER_STOPPED else 1)
+

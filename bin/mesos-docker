@@ -1,0 +1,257 @@
+#!/usr/bin/env python
+import json
+import logging
+import logging.handlers
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+import traceback
+
+import mesos
+import mesos_pb2
+
+def main():
+    def handler(signum, _):
+        log.info('Exiting due to signal: '+str(signum))
+        exit(-signum)
+    signal.signal(signal.SIGINT,  handler)
+    signal.signal(signal.SIGTERM, handler)
+    signal.signal(signal.SIGABRT, handler)
+    signal.signal(signal.SIGPIPE, handler)
+    signal.signal(signal.SIGSEGV, handler)
+    driver = mesos.MesosExecutorDriver(DockerExecutor(sys.argv[1:]))
+    log.info('Ready to serve!')
+    exit(0 if driver.run() == mesos_pb2.DRIVER_STOPPED else 1)
+
+# This script wraps one and only one container.
+cid = None
+cidfile = None
+def read_cid():
+    global cid
+    if cidfile is not None:
+        try:
+            with open(cidfile) as f:
+                cid = f.read().strip()
+        except IOError:
+            pass
+
+log    = logging.getLogger(os.path.basename(sys.argv[0]))
+log.setLevel(logging.DEBUG)
+syslog = logging.handlers.SysLogHandler(address = '/dev/log')
+syslog_format = logging.Formatter("%(name)s[%(process)d]: %(message)s")
+syslog.setFormatter(syslog_format)
+log.addHandler(syslog)
+
+class DockerExecutor(mesos.Executor):
+    def __init__(self, args):
+        self.args   = args
+        self.task   = None
+        self.driver = None
+        self.runner_thread = None
+        self.shutdown_thread = None
+        self.data   = {}
+        self.env    = {}
+
+    def run(self):
+        global proc
+        exitcode = 2
+        finalstate = mesos_pb2.TASK_FAILED
+        resources = self.task.resources
+        try:
+            cpus = [ r.scalar.value for r in resources if r.name == 'cpus' ]
+            megs = [ r.scalar.value for r in resources if r.name == 'mem' ]
+            relative_cpu = [ int(256 * r)     for r in cpus ] + [ None ]
+            memory_bytes = [ int((2**30) * r) for r in megs ] + [ None ]
+            proc = run_with_env_PORT(self.args[0], self.args[1:], self.env,
+                                     relative_cpu[0], memory_bytes[0])
+            self.send_state(mesos_pb2.TASK_RUNNING)
+            proc.wait()
+            log.info('Container exited with code: %d' % proc.returncode)
+            if proc.returncode == 0:
+                finalstate = mesos_pb2.TASK_FINISHED
+            else:
+                if self.shutdown_thread:
+                    finalstate = mesos_pb2.TASK_KILLED
+                else:
+                    finalstate = mesos_pb2.TASK_FAILED
+        except Exception, e:
+            log_exc()
+        finally:
+            self.send_state(finalstate)
+            exit(exitcode)
+
+    def send_state(self, state):
+        try:
+            update               = mesos_pb2.TaskStatus()
+            update.task_id.value = self.task.task_id.value
+            update.state         = state
+            self.driver.sendStatusUpdate(update)
+        except Exception, e:
+            log_exc()
+
+    #### Mesos Executor API methods ####
+
+    def registered(self, driver, executorInfo, frameworkInfo, slaveInfo):
+        log.info('Registered with Mesos slave')
+
+    def reregistered(driver, slaveInfo):
+        log.info('Reregistered with Mesos slave')
+
+    def disconnected(driver):
+        log.warning('Disconnected from Mesos slave')
+
+    def launchTask(self, driver, task):
+        if self.task is not None:
+            log.error('Executor was reused but this executor is not reuseable')
+            exit(2)
+        self.task   = task
+        self.driver = driver
+        log.info('Task is: %s' % task.task_id.value)
+        try:
+            self.data = json.loads(task.data) if task.data else {}
+            for line in json_pp(self.data).splitlines():
+                log.info(line)
+            self.env = self.data['env'] if 'env' in self.data else {}
+            if 'port' in self.data and self.data['port'] != 0:
+                self.env['PORT'] = str(int(self.data['port']))
+            for k, v in self.env.items():
+                os.environ[k] = str(v)
+        except Exception, e:
+            log.error('JSON from framework is rubbish')
+            log_exc()
+        try:
+            self.run_thread = threading.Thread(target=self.run)
+            self.run_thread.daemon = True
+            self.run_thread.start()
+        except Exception, e:
+            log_exc()
+            self.send_state(mesos_pb2.TASK_FAILED)
+            exit(2)
+
+    def killTask(self, driver, task_id):
+        if self.task.task_id.value == task_id.value:
+            log.info('Asked to shutdown managed task %s' % task_id.value)
+            self.cleanup()
+        else:
+            log.info('Asked to shutdown unknown task %s' % task_id.value)
+
+    def cleanup(self):
+        if self.shutdown_thread is None:
+            self.shutdown_thread = threading.Thread(target=cleanup_container)
+            self.shutdown_thread.daemon = True
+            self.shutdown_thread.start()
+
+    def shutdown(self, driver):
+        self.cleanup()
+
+# Handles signals, passed as negative numbers, and ensures worker process is
+# cleaned up if it exists.
+#
+# This function shows up in many places but because it's final statement is a
+# call to os._exit() we can be sure it is only ever called one time.
+def exit(returncode):
+    try:
+        cleanup_container()
+    except Exception, e:
+        log_exc()
+    finally:
+        os._exit( ((-returncode) + 128) if returncode < 0 else returncode )
+
+def log_exc():
+    for line in traceback.format_exc().splitlines():
+        log.error(line)
+
+def json_pp(thing):
+    s = json.dumps(thing, indent=2, separators=(',', ': '), sort_keys=True)
+    data_lines = s.splitlines()[1:-1]
+    return "{ " + '\n'.join([data_lines[0][2:]] + data_lines[1:]) + " }"
+
+def ensure_image(f):
+    def f_(image, *args, **kwargs):
+        pull_once(image)
+        return f(image, *args, **kwargs)
+    return f_
+
+def try_cid(f):
+    def f_(*args, **kwargs):
+        if cid is None:
+            read_cid()
+        return f(*args, **kwargs)
+    return f_
+
+cleaning_up_already = False # Hackish lock.
+@try_cid
+def cleanup_container():
+    global cid
+    global cidfile
+    global cleaning_up_already
+    if cid is not None and not cleaning_up_already:
+        cleaning_up_already = True
+        log.info('Cleaning up container %s' % cid)
+        subprocess.check_call(['docker', 'stop', '-t=2', cid])
+        subprocess.check_call(['rm', '-f', cidfile])
+        cid = None
+        cidfile = None
+
+@ensure_image
+def run_with_env_PORT(image, args=[], env={},
+                      relative_cpu=None, memory_bytes=None):
+    global cidfile
+    cidfile = '/tmp/docker_cid.' + os.urandom(8).encode('hex')
+    cmd     = [ 'run', '-cidfile', cidfile ]
+    if relative_cpu is not None:
+        cmd += [ '-c', str(relative_cpu) ]
+    if memory_bytes is not None:
+        cmd += [ '-m', str(memory_bytes) ]
+    for k, v in env.items():
+        cmd += [ '-e', '%s=%s' % (k,v) ]
+    port = principal_port(image)
+    if port and 'PORT' in os.environ:
+        port_mapping   = os.environ['PORT'] + ":" + str(int(port))
+        cmd           += [ '-p', port_mapping ]
+    argv = ['docker'] + cmd + [ image ] + [ arg for arg in args ]
+    log.info('ARGV ' + ' '.join(str(arg) for arg in argv))
+    return subprocess.Popen(argv)
+
+@ensure_image
+def principal_port(image):
+    text   = subprocess.check_output(['docker', 'inspect', image])
+    parsed = json.loads(text)[0]
+    config = None
+    if 'Config' in parsed:
+        config = parsed['Config']
+    if 'config' in parsed and config is None:
+        config = parsed['config']
+    port   = config['PortSpecs'][0].split(':')[-1] if config else None
+    return port
+
+def pull(image):
+    subprocess.check_call(['docker', 'pull', image])
+    refresh_docker_image_info(image)
+
+def pull_once(image):
+    if not image_info(image):
+        pull(image)
+
+def image_info(image):
+    if image in images:
+        return images[image]
+    else:
+        return refresh_docker_image_info(image)
+
+images = {}
+def refresh_docker_image_info(image):
+    delim   = re.compile('  +')
+    text    = subprocess.check_output(['docker', 'images', image])
+    records = [ delim.split(line) for line in text.splitlines() ]
+    for record in records:
+        if record[0] == image:
+            images[image] = image
+            return record
+
+if __name__ == '__main__':
+    main()
