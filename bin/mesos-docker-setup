@@ -1,0 +1,114 @@
+#!/bin/bash
+set -o errexit -o nounset -o pipefail
+function -h {
+cat <<USAGE
+ USAGE: mesos-docker-setup
+
+  Installs tools for running Docker under Mesos with Marathon.
+
+USAGE
+}; function --help { -h ;}
+export LC_ALL=en_US.UTF-8 DEBIAN_FRONTEND=noninteractive 
+
+downloads=http://downloads.mesosphere.io
+deb="$downloads"/master/ubuntu/13.04/mesos_0.14.0_amd64.deb
+egg="$downloads"/master/ubuntu/13.04/mesos-0.14.0-py2.7-linux-x86_64.egg
+jar="$downloads"/marathon/marathon-0.0.6-SNAPSHOT-jar-with-dependencies.jar
+upstart="$downloads"/marathon/marathon.conf
+executor="$downloads"/mesos-docker/mesos-docker
+
+function main {
+  installer "$@"
+}
+
+function installer {
+  packages
+  install_mesos
+  mesos_egg
+  install_marathon
+  install_executor
+  install_httpie
+  add_ubuntu_to_staff_group
+  msg 'Install complete. Be sure to refresh upstart and start Zookeeper.'
+  msg '(Easiest way is a reboot.)'
+}
+
+packages=( default-jre-headless
+           linux-image-extra-"$(uname -r)"
+           lxc-docker
+           python-setuptools
+           zookeeperd )
+function packages {
+  aptitude install -y curl
+  docker_repo
+  aptitude update
+  aptitude install -y "${packages[@]}"
+}
+
+function docker_repo {
+  curl_ http://get.docker.io/gpg | apt-key add -
+  out 'deb https://get.docker.io/ubuntu docker main' \
+    > /etc/apt/sources.list.d/docker.list
+}
+
+function mesos_egg {
+  curl_ "$egg" --output mesos.egg
+  easy_install ./mesos.egg
+}
+
+function install_mesos {
+  curl_ "$deb" --output mesos.deb
+  dpkg -i mesos.deb
+}
+
+function install_marathon {
+  marathon_download
+  curl_ "$upstart" --output /etc/init/marathon.conf
+}
+
+function marathon_download {
+  mkdir -p /opt/marathon/ /etc/marathon
+  curl_ "$jar" --output /opt/marathon/marathon.jar
+  chmod ug+rx /opt/marathon/marathon.jar
+}
+
+function install_executor {
+  mkdir -p /var/lib/mesos/executors
+  curl_ "$executor" --output /var/lib/mesos/executors/docker
+}
+
+function install_httpie {
+  easy_install httpie
+}
+
+# Allow Ubuntu to import Python packages installed with easy_install, for
+# running HTTPie. This is a problem of some longevity on Ubuntu:
+#   http://superuser.com/questions/573699/how-do-i-install-python-with-proper-permissions
+# Putting Ubuntu in the staff group seems like the least invasive and most
+# easily reversable fix.
+function add_ubuntu_to_staff_group {
+  gpasswd staff -a ubuntu
+}
+
+function curl_ {
+  local stat cmd=( curl -sSfL "$@" )
+  if "${cmd[@]}"
+  then
+    return 0
+  else
+    local stat=$?
+    { printf ': exit %3s ;' "$stat"
+      printf ' %q' "${cmd[@]}"
+      printf '\n' ;} >&2
+    return $stat
+  fi
+}
+
+function msg { out "$*" >&2 ;}
+function err { local x=$? ; msg "$*" ; return $(( $x == 0 ? 1 : $x )) ;}
+function out { printf '%s\n' "$*" ;}
+
+if [[ ${1:-} ]] && declare -F | cut -d' ' -f3 | fgrep -qx -- "${1:-}"
+then "$@"
+else main "$@"
+fi
