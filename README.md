@@ -5,6 +5,10 @@
 Docker containers provide a consistent, compact and flexible means of packaging application builds. Delivering applications with Docker on Mesos promises a truly elastic, efficient and consistent platform for delivering a range of applications on premises or in the cloud.
 This repository combines Docker with the [Mesos](http://mesos.apache.org) cluster scheduler and [Marathon](https://github.com/mesosphere/marathon) but could also be used with other Mesos frameworks such as [Chronos](https://github.com/airbnb/chronos).
 
+## Getting Started
+
+This [tutorial](https://github.com/mesosphere/mesos-docker/blob/master/tutorial.md) shows you how you can get started with Mesos / Docker. 
+
 ## Help
 
 If you have questions, please post on the [Marathon Framework Group](https://groups.google.com/forum/?hl=en#!forum/marathon-framework) email list.
