@@ -25,4 +25,5 @@ The team at [Mesosphere](http://mesosphere.io) is also happy to answer any quest
 
 
 
+[Mesos]: http://incubator.apache.org/mesos/ "Apache Mesos"
 [freenode]: http://freenode.net/ "IRC channels"
