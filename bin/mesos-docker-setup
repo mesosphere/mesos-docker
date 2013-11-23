@@ -28,7 +28,7 @@ function installer {
   install_marathon
   install_executor
   install_httpie
-  add_ubuntu_to_staff_group
+  mangle_groups
   msg 'Install complete. Be sure to refresh upstart and start Zookeeper.'
   msg '(Easiest way is a reboot.)'
 }
@@ -81,13 +81,14 @@ function install_httpie {
   easy_install httpie
 }
 
-# Allow Ubuntu to import Python packages installed with easy_install, for
+# Allow user to import Python packages installed with easy_install, for
 # running HTTPie. This is a problem of some longevity on Ubuntu:
 #   http://superuser.com/questions/573699/how-do-i-install-python-with-proper-permissions
-# Putting Ubuntu in the staff group seems like the least invasive and most
+# Putting the user in the staff group seems like the least invasive and most
 # easily reversable fix.
-function add_ubuntu_to_staff_group {
-  gpasswd staff -a ubuntu
+function mangle_groups {
+  local user="$(who am i | cut -d' ' -f1)"
+  [[ $user = root ]] || gpasswd staff -a "$user"
 }
 
 function curl_ {
