@@ -87,7 +87,7 @@ function install_httpie {
 # Putting the user in the staff group seems like the least invasive and most
 # easily reversable fix.
 function mangle_groups {
-  local user="$(who am i | cut -d' ' -f1)"
+  local user="${SUDO_USER:-$(id -un)}"
   [[ $user = root ]] || gpasswd staff -a "$user"
 }
 
