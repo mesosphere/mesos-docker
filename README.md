@@ -21,7 +21,7 @@ The team at [Mesosphere](http://mesosphere.io) is also happy to answer any quest
 
 ## Requirements
 
-* [Mesos][Mesos] 0.14+ (while 0.14 isn't released yet, [Mesosphere](http://mesosphere.io/downloads/) provides packages of the release candidates).
+* [Mesos][Mesos] 0.14+
 
 [Mesos]: http://incubator.apache.org/mesos/ "Apache Mesos"
 [freenode]: http://freenode.net/ "IRC channels"
