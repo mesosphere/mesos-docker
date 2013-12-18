@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import itertools
 import json
 import logging
 import logging.handlers
@@ -62,11 +63,14 @@ class DockerExecutor(mesos.Executor):
         finalstate = mesos_pb2.TASK_FAILED
         resources = self.task.resources
         try:
+            img  = self.args[0]
+            args = self.args[1:]
             cpus = [ r.scalar.value for r in resources if r.name == 'cpus' ]
             megs = [ r.scalar.value for r in resources if r.name == 'mem' ]
             relative_cpu = [ int(256 * r)     for r in cpus ] + [ None ]
             memory_bytes = [ int((2**30) * r) for r in megs ] + [ None ]
-            proc = run_with_env_PORT(self.args[0], self.args[1:], self.env,
+            ports = self.allocated_ports()
+            proc = run_with_settings(img, args, self.env, ports,
                                      relative_cpu[0], memory_bytes[0])
             self.send_state(mesos_pb2.TASK_RUNNING)
             proc.wait()
@@ -116,16 +120,11 @@ class DockerExecutor(mesos.Executor):
             for line in json_pp(self.data).splitlines():
                 log.info(line)
             self.env = self.data['env'] if 'env' in self.data else {}
-            if 'port' in self.data:
-                port = int(self.data['port'])
+            for i, port in enumerate(self.allocated_ports()):
                 if port != 0:
-                    self.env['PORT'] = str(port)
-            if 'ports' in self.data:
-                for i, port in enumerate( int(s) for s in self.data['ports'] ):
-                    if port != 0:
-                        self.env['PORT'+str(i)] = str(port)
-                if 'PORT0' in self.env:
-                    self.env['PORT'] = self.env['PORT0']
+                    self.env['PORT'+str(i)] = str(port)
+            if 'PORT0' in self.env:
+                self.env['PORT'] = self.env['PORT0']
             for k, v in self.env.items():
                 os.environ[k] = str(v)
         except Exception, e:
@@ -152,6 +151,12 @@ class DockerExecutor(mesos.Executor):
             self.shutdown_thread = threading.Thread(target=cleanup_container)
             self.shutdown_thread.daemon = True
             self.shutdown_thread.start()
+
+    def allocated_ports(self):
+        resources = self.task.resources
+        ranges = [ _.ranges.range[0] for _ in resources if _.name == 'ports' ]
+        ports  = [ int(_.begin) for _ in ranges ] # NB: casting long() to int()
+        return ports
 
     def shutdown(self, driver):
         self.cleanup()
@@ -206,7 +211,7 @@ def cleanup_container():
         cidfile = None
 
 @ensure_image
-def run_with_env_PORT(image, args=[], env={},
+def run_with_settings(image, args=[], env={}, ports=[],
                       relative_cpu=None, memory_bytes=None):
     global cidfile
     cidfile = '/tmp/docker_cid.' + os.urandom(8).encode('hex')
@@ -217,18 +222,21 @@ def run_with_env_PORT(image, args=[], env={},
         cmd += [ '-m', str(memory_bytes) ]
     for k, v in env.items():
         cmd += [ '-e', '%s=%s' % (k,v) ]
-    port = principal_port(image)
-    if port and 'PORT' in os.environ:
-        port_mapping   = os.environ['PORT'] + ":" + str(int(port))
-        cmd           += [ '-p', port_mapping ]
+    log.info('Mesos ports: ' + str(ports))
+    docker_ports = inner_ports(image)
+    log.info('Docker ports: ' + str(docker_ports))
+    port_pairings = itertools.izip_longest(ports, docker_ports)
+    for allocated, target in port_pairings:
+        if allocated is None:
+            log.warning('Too few ports were allocated to this image.')
+            break
+        if target is None:
+            log.warning('Too many ports were allocated to this image.')
+            break
+        cmd += [ '-p', '%d:%d' % (allocated, target) ]
     argv = ['docker'] + cmd + [ image ] + [ arg for arg in args ]
     log.info('ARGV ' + ' '.join(str(arg) for arg in argv))
     return subprocess.Popen(argv)
-
-@ensure_image
-def principal_port(image):
-    ports = inner_ports(image)
-    return ports[0] if ports != [] else None
 
 @ensure_image
 def inner_ports(image):
@@ -242,10 +250,10 @@ def inner_ports(image):
     if config:
         exposed = config.get('ExposedPorts', {})
         if exposed and isinstance(exposed, dict):
-            return [ k.split('/')[0] for k in exposed.keys() ]
+            return [ int(k.split('/')[0]) for k in exposed.keys() ]
         specs = config.get('PortSpecs', [])
         if specs and isinstance(specs, list):
-            return [ v.split(':')[-1] for v in specs ]
+            return [ int(v.split(':')[-1]) for v in specs ]
     return [] # If all else fails...
 
 def pull(image):
