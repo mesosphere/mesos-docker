@@ -32,12 +32,6 @@ function installer {
   msg '(Easiest way is a reboot.)'
 }
 
-function client_install {
-  packages
-  mesos_egg
-  install_httpie
-}
-
 packages=( default-jre-headless
            linux-image-extra-"$(uname -r)"
            lxc-docker
