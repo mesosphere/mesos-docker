@@ -153,10 +153,13 @@ class DockerExecutor(mesos.Executor):
             self.shutdown_thread.start()
 
     def allocated_ports(self):
-        resources = self.task.resources
-        ranges = [ _.ranges.range[0] for _ in resources if _.name == 'ports' ]
-        ports  = [ int(_.begin) for _ in ranges ] # NB: casting long() to int()
-        return ports
+        range_resources = [ _.ranges.range for _ in self.task.resources
+                                                 if _.name == 'ports' ]
+        ranges = itertools.chain(*range_resources)
+        # NB: Casting long() to int() so there's no trailing 'L' in later
+        #     stringifications. Ports should only ever be shorts, anyways.
+        ports = [ range(int(_.begin), int(_.end)+1) for _ in ranges ]
+        return list(itertools.chain(*ports))
 
     def shutdown(self, driver):
         self.cleanup()
