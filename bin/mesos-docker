@@ -227,6 +227,11 @@ def run_with_env_PORT(image, args=[], env={},
 
 @ensure_image
 def principal_port(image):
+    ports = inner_ports(image)
+    return ports[0] if ports != [] else None
+
+@ensure_image
+def inner_ports(image):
     text   = subprocess.check_output(['docker', 'inspect', image])
     parsed = json.loads(text)[0]
     config = None
@@ -234,8 +239,14 @@ def principal_port(image):
         config = parsed['Config']
     if 'config' in parsed and config is None:
         config = parsed['config']
-    port   = config['PortSpecs'][0].split(':')[-1] if config else None
-    return port
+    if config:
+        exposed = config.get('ExposedPorts', {})
+        if exposed and isinstance(exposed, dict):
+            return [ k.split('/')[0] for k in exposed.keys() ]
+        specs = config.get('PortSpecs', [])
+        if specs and isinstance(specs, list):
+            return [ v.split(':')[-1] for v in specs ]
+    return [] # If all else fails...
 
 def pull(image):
     subprocess.check_call(['docker', 'pull', image])
