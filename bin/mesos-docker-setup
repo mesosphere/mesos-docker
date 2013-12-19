@@ -11,10 +11,9 @@ USAGE
 export LC_ALL=en_US.UTF-8 DEBIAN_FRONTEND=noninteractive 
 
 downloads=http://downloads.mesosphere.io
-deb="$downloads"/master/ubuntu/13.04/mesos_0.14.0_amd64.deb
-egg="$downloads"/master/ubuntu/13.04/mesos-0.14.0-py2.7-linux-x86_64.egg
-jar="$downloads"/marathon/marathon-0.0.6-SNAPSHOT-jar-with-dependencies.jar
-upstart="$downloads"/marathon/marathon.conf
+deb="$downloads"/master/ubuntu/13.10/mesos_0.15.0-rc4_amd64.deb
+egg="$downloads"/master/ubuntu/13.10/mesos_0.15.0-rc4_amd64.egg
+marathon="$downloads"/marathon/marathon_0.2.1_noarch.deb
 executor="$downloads"/mesos-docker/mesos-docker
 
 function main {
@@ -31,6 +30,12 @@ function installer {
   mangle_groups
   msg 'Install complete. Be sure to refresh upstart and start Zookeeper.'
   msg '(Easiest way is a reboot.)'
+}
+
+function client_install {
+  packages
+  mesos_egg
+  install_httpie
 }
 
 packages=( default-jre-headless
@@ -62,14 +67,8 @@ function install_mesos {
 }
 
 function install_marathon {
-  marathon_download
-  curl_ "$upstart" --output /etc/init/marathon.conf
-}
-
-function marathon_download {
-  mkdir -p /opt/marathon/ /etc/marathon
-  curl_ "$jar" --output /opt/marathon/marathon.jar
-  chmod ug+rx /opt/marathon/marathon.jar
+  curl_ "$marathon" --output /tmp/marathon.deb
+  dpkg -i /tmp/marathon.deb
 }
 
 function install_executor {
