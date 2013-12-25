@@ -75,6 +75,7 @@ class DockerExecutor(mesos.Executor):
             self.send_state(mesos_pb2.TASK_RUNNING)
             proc.wait()
             log.info('Container exited with code: %d' % proc.returncode)
+            exitcode = proc.returncode
             if proc.returncode == 0:
                 finalstate = mesos_pb2.TASK_FINISHED
             else:

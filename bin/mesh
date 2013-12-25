@@ -89,6 +89,7 @@ class ShExecutor(mesos.Executor):
             log.info('Waiting for process...')
             proc.wait()
             log.info('Process exited with code: %d' % proc.returncode)
+            exitcode = proc.returncode
             try:
                 # If the process failed to kills its subprocesses, try to shut
                 # them down gracefully.
