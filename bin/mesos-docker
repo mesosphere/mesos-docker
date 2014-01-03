@@ -120,12 +120,13 @@ class DockerExecutor(mesos.Executor):
             self.data = json.loads(task.data) if task.data else {}
             for line in json_pp(self.data).splitlines():
                 log.info(line)
-            self.env = self.data['env'] if 'env' in self.data else {}
             for i, port in enumerate(self.allocated_ports()):
                 if port != 0:
                     self.env['PORT'+str(i)] = str(port)
             if 'PORT0' in self.env:
                 self.env['PORT'] = self.env['PORT0']
+            if 'env' in self.data: # NB: user-specified PORT* vars override ours
+                self.env.update(self.data['env'])
             for k, v in self.env.items():
                 os.environ[k] = str(v)
         except Exception, e:
