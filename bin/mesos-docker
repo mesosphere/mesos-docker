@@ -40,7 +40,7 @@ def read_cid():
         except IOError:
             pass
 
-log    = logging.getLogger(os.path.basename(sys.argv[0]))
+log    = logging.getLogger('mesos-docker')
 log.setLevel(logging.DEBUG)
 syslog = logging.handlers.SysLogHandler(address = '/dev/log')
 syslog_format = logging.Formatter("%(name)s[%(process)d]: %(message)s")
