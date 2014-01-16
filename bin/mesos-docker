@@ -52,6 +52,8 @@ class DockerExecutor(mesos.Executor):
         self.args   = args
         self.task   = None
         self.driver = None
+        self.image  = None
+        self.docker_options = []
         self.runner_thread = None
         self.shutdown_thread = None
         self.data   = {}
@@ -63,14 +65,18 @@ class DockerExecutor(mesos.Executor):
         finalstate = mesos_pb2.TASK_FAILED
         resources = self.task.resources
         try:
-            img  = self.args[0]
-            args = self.args[1:]
+            if self.image is None:
+                self.image = self.args[0]
+                args = self.args[1:]
+            else:
+                args = self.args[0:]
             cpus = [ r.scalar.value for r in resources if r.name == 'cpus' ]
             megs = [ r.scalar.value for r in resources if r.name == 'mem' ]
             relative_cpu = [ int(256 * r)     for r in cpus ] + [ None ]
             memory_bytes = [ int((2**30) * r) for r in megs ] + [ None ]
             ports = self.allocated_ports()
-            proc = run_with_settings(img, args, self.env, ports,
+            proc = run_with_settings(self.image, self.docker_options,
+                                     args, self.env, ports,
                                      relative_cpu[0], memory_bytes[0])
             self.send_state(mesos_pb2.TASK_RUNNING)
             proc.wait()
@@ -127,6 +133,13 @@ class DockerExecutor(mesos.Executor):
                 self.env['PORT'] = self.env['PORT0']
             if 'env' in self.data: # NB: user-specified PORT* vars override ours
                 self.env.update(self.data['env'])
+            if 'container' in self.data:
+                container = self.data['container']
+                m = re.match(r'^docker:///(.+)$', container['image'])
+                if m is None:
+                    raise ValueError('container.image must be a docker:/// URL')
+                self.image = m.group(1)
+                self.docker_options = container['options']
             for k, v in self.env.items():
                 os.environ[k] = str(v)
         except Exception, e:
@@ -216,7 +229,7 @@ def cleanup_container():
         cidfile = None
 
 @ensure_image
-def run_with_settings(image, args=[], env={}, ports=[],
+def run_with_settings(image, docker_opts=[], args=[], env={}, ports=[],
                       relative_cpu=None, memory_bytes=None):
     global cidfile
     cidfile = '/tmp/docker_cid.' + os.urandom(8).encode('hex')
@@ -239,7 +252,7 @@ def run_with_settings(image, args=[], env={}, ports=[],
             log.warning('Too many ports were allocated to this image.')
             break
         cmd += [ '-p', '%d:%d' % (allocated, target) ]
-    argv = ['docker'] + cmd + [ image ] + [ arg for arg in args ]
+    argv = ['docker'] + docker_opts + cmd + [ image ] + [ arg for arg in args ]
     log.info('ARGV ' + ' '.join(str(arg) for arg in argv))
     return subprocess.Popen(argv)
 
