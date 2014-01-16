@@ -243,6 +243,19 @@ def run_with_settings(image, args=[], env={}, ports=[],
     log.info('ARGV ' + ' '.join(str(arg) for arg in argv))
     return subprocess.Popen(argv)
 
+try:
+    subprocess.check_output
+except:
+    # For python 2.6 or earlier.
+    def check_output(*args):
+        p = subprocess.Popen(stdout=subprocess.PIPE, *args)
+        stdout = p.communicate()[0]
+        exitcode = p.wait()
+        if exitcode:
+            raise subprocess.CalledProcessError(exitcode, args[0])
+        return stdout
+    subprocess.check_output = check_output
+
 @ensure_image
 def inner_ports(image):
     text   = subprocess.check_output(['docker', 'inspect', image])
