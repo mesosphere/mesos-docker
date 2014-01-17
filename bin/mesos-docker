@@ -224,6 +224,7 @@ def cleanup_container():
         cleaning_up_already = True
         log.info('Cleaning up container %s' % cid)
         subprocess.check_call(['docker', 'stop', '-t=2', cid])
+        subprocess.check_call(['docker', 'rm', cid])
         subprocess.check_call(['rm', '-f', cidfile])
         cid = None
         cidfile = None
