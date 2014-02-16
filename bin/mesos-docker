@@ -234,7 +234,7 @@ def run_with_settings(image, docker_opts=[], args=[], env={}, ports=[],
                       relative_cpu=None, memory_bytes=None):
     global cidfile
     cidfile = '/tmp/docker_cid.' + os.urandom(8).encode('hex')
-    cmd     = [ 'run', '-cidfile', cidfile ]
+    cmd     = [ 'run', '--cidfile', cidfile ]
     if relative_cpu is not None:
         cmd += [ '-c', str(relative_cpu) ]
     if memory_bytes is not None:
