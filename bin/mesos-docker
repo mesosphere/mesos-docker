@@ -72,7 +72,7 @@ class DockerExecutor(mesos.Executor):
                 args = self.args[0:]
             cpus = [ r.scalar.value for r in resources if r.name == 'cpus' ]
             megs = [ r.scalar.value for r in resources if r.name == 'mem' ]
-            relative_cpu = [ int(256 * r)     for r in cpus ] + [ None ]
+            relative_cpu = [ int(1024 * r)    for r in cpus ] + [ None ]
             memory_bytes = [ int((2**20) * r) for r in megs ] + [ None ]
             ports = self.allocated_ports()
             proc = run_with_settings(self.image, self.docker_options,
