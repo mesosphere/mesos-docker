@@ -1,5 +1,9 @@
 # Mesos / Docker Integration
 
+NOTE: This is a proof of concept for running Dockers on Mesos via Marathon. It
+has a number of limitations and is not recommended for production use.
+First class Docker support is coming up in Mesos 0.19 via [Deimos](https://github.com/mesosphere/deimos).
+
 ## Summary
 
 Docker containers provide a consistent, compact and flexible means of packaging application builds. Delivering applications with Docker on Mesos promises a truly elastic, efficient and consistent platform for delivering a range of applications on premises or in the cloud.
