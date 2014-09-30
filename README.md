@@ -1,4 +1,7 @@
 ## Deprecated!
 
 This project was a proof of concept for Docker support in Mesos via an executor and is no longer maintained.
-Please check out Deimos for better Docker support in Mesos: https://github.com/mesosphere/deimos
+
+As of version 0.20.0, Docker containers are natively supported by Mesos! To learn how to configure Docker and Mesos, see the [Mesosphere tutorial](https://mesosphere.com/learn/launch-docker-container-on-mesosphere/).  
+
+Marathon offers [easy scaling and deployment of Docker containers on Mesos](https://mesosphere.github.io/marathon/docs/native-docker.html).
